@@ -146,7 +146,7 @@ private fun AiFusionCamera() {
         if (controlsVisible) {
             Card(Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(start = 10.dp, end = 88.dp, bottom = 10.dp), shape = RoundedCornerShape(16.dp)) {
                 Row(Modifier.fillMaxWidth().padding(6.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    Button(onClick = { files.launch(arrayOf("image/*", "video/*", "application/*", "text/*")), }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp)) { Text("Files") }
+                    Button(onClick = { files.launch(arrayOf("image/*", "video/*", "application/*", "text/*")) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp)) { Text("Files") }
                     Button(onClick = { tree.launch(null) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp)) { Text("USB / Drive") }
                     Button(onClick = { settings = true }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp)) { Text("Settings") }
                 }
@@ -219,14 +219,10 @@ private fun Settings(confidence: Float, onConfidence: (Float) -> Unit, targetUiS
             Spacer(Modifier.height(8.dp)); Text("External buttons")
             Row(verticalAlignment = Alignment.CenterVertically) { Switch(checked = controlsVisible, onCheckedChange = onControlsVisible); Spacer(Modifier.width(8.dp)); Text(if (controlsVisible) "Files / USB / Settings: ON" else "Files / USB / Settings: OFF") }
             Spacer(Modifier.height(8.dp)); Text("App version: $currentVersion")
-            Button(onClick = onCheckUpdate, enabled = !checkingUpdate, modifier = Modifier.fillMaxWidth()) { Text(if (checkingUpdate) "Checking..." else "Check for Update") }
-            updateInfo?.let { info ->
-                if (info.available && info.version != null && info.releaseUrl != null) { Text("Update available: v${info.version}", color = MaterialTheme.colorScheme.primary); Button(onClick = { onOpenUpdate(info.releaseUrl) }, modifier = Modifier.fillMaxWidth()) { Text("Open Update") } }
-                else if (info.error != null) Text(info.error, style = MaterialTheme.typography.bodySmall)
-                else Text("You are using the latest version.", style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(8.dp)); Text("Orientation: Auto • 16:9 / 9:16"); Text("Performance: automatic device profile + frame throttling"); Text("Files: Android Storage Access Framework"); Text("USB OTG / pendrive: supported when Android exposes the drive")
-            Spacer(Modifier.height(10.dp)); Button(onClick = bluetooth, modifier = Modifier.fillMaxWidth()) { Text("Connect Bluetooth") }
+            Spacer(Modifier.height(4.dp)); Button(onClick = onCheckUpdate, enabled = !checkingUpdate, modifier = Modifier.fillMaxWidth()) { Text(if (checkingUpdate) "Checking..." else "Check for Update") }
+            updateInfo?.let { info -> Spacer(Modifier.height(4.dp)); Text(if (info.available) "Update available: v${info.version}" else (info.error ?: "You are up to date")); if (info.available && info.releaseUrl != null) OutlinedButton(onClick = { onOpenUpdate(info.releaseUrl) }, modifier = Modifier.fillMaxWidth()) { Text("Open Release") } }
+            Spacer(Modifier.height(4.dp)); OutlinedButton(onClick = bluetooth, modifier = Modifier.fillMaxWidth()) { Text("Bluetooth Settings") }
+            Spacer(Modifier.height(4.dp)); Text("Device profile and camera resolution are selected automatically.", style = MaterialTheme.typography.bodySmall)
         }
-    }, confirmButton = { TextButton(onClick = close) { Text("Done") } })
+    }, confirmButton = { Button(onClick = close) { Text("Close") } })
 }
