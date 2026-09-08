@@ -46,7 +46,12 @@ jobs:
         shell: bash
         run: |
           TAG="v${VERSION}"
-          APK="app/build/outputs/apk/release/app-release.apk"
+          APK="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -1)"
+          if [ -z "$APK" ]; then
+            echo "Release APK not found"
+            find app/build/outputs/apk -type f -name '*.apk' -print
+            exit 1
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK" --clobber
           else
