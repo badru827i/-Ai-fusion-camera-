@@ -72,6 +72,8 @@ private fun AiFusionCamera() {
     var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     var settings by remember { mutableStateOf(false) }
     var confidence by remember { mutableFloatStateOf(.55f) }
+    var targetUiScale by remember { mutableFloatStateOf(1f) }
+    var controlsVisible by remember { mutableStateOf(true) }
     var boxes by remember { mutableStateOf(emptyList<BoxData>()) }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
     val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { }
@@ -80,7 +82,7 @@ private fun AiFusionCamera() {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (granted) {
             CameraPreview(profile, confidence) { boxes = it }
-            BoxOverlay(boxes, Modifier.fillMaxSize())
+            BoxOverlay(boxes, Modifier.fillMaxSize(), targetUiScale)
         } else {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("Camera permission diperlukan", color = Color.White)
@@ -88,20 +90,47 @@ private fun AiFusionCamera() {
                 Button(onClick = { cameraPermission.launch(Manifest.permission.CAMERA) }) { Text("Allow Camera") }
             }
         }
+
         Column(Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(14.dp)) {
             Text("AI FUSION CAMERA", color = Color.White, style = MaterialTheme.typography.titleLarge)
             Text("V3  •  ${profile.name}  •  AUTO ROTATION", color = Color.White.copy(.8f))
         }
-        Card(Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(12.dp), shape = RoundedCornerShape(18.dp)) {
-            Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                Button(onClick = { files.launch(arrayOf("image/*", "video/*", "application/*", "text/*")) }) { Text("Files") }
-                Button(onClick = { tree.launch(null) }) { Text("USB / Drive") }
-                Button(onClick = { settings = true }) { Text("Settings") }
+
+        // Floating outside button: always available to show/hide the bottom controls.
+        FilledTonalButton(
+            onClick = { controlsVisible = !controlsVisible },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            Text(if (controlsVisible) "Hide UI" else "Show UI")
+        }
+
+        if (controlsVisible) {
+            Card(
+                Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(start = 12.dp, end = 92.dp, bottom = 12.dp),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    Button(onClick = { files.launch(arrayOf("image/*", "video/*", "application/*", "text/*")) }) { Text("Files") }
+                    Button(onClick = { tree.launch(null) }) { Text("USB / Drive") }
+                    Button(onClick = { settings = true }) { Text("Settings") }
+                }
             }
         }
     }
-    if (settings) Settings(confidence, { confidence = it }, { settings = false }) {
-        context.startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS))
+
+    if (settings) {
+        Settings(
+            confidence = confidence,
+            onConfidence = { confidence = it },
+            targetUiScale = targetUiScale,
+            onTargetUiScale = { targetUiScale = it },
+            controlsVisible = controlsVisible,
+            onControlsVisible = { controlsVisible = it },
+            close = { settings = false }
+        ) {
+            context.startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS))
+        }
     }
 }
 
@@ -164,7 +193,7 @@ private fun CameraPreview(profile: DeviceTier, confidence: Float, onBoxes: (List
 }
 
 @Composable
-private fun BoxOverlay(boxes: List<BoxData>, modifier: Modifier) {
+private fun BoxOverlay(boxes: List<BoxData>, modifier: Modifier, uiScale: Float) {
     Canvas(modifier) {
         boxes.forEach { box ->
             val sourceW = if (box.rotationDegrees % 180 == 0) box.sourceWidth else box.sourceHeight
@@ -173,25 +202,55 @@ private fun BoxOverlay(boxes: List<BoxData>, modifier: Modifier) {
             val cropX = (sourceW * scale - size.width) / 2f
             val cropY = (sourceH * scale - size.height) / 2f
             val r = box.rect
+
+            // Scale the target UI around the detected object's center.
+            val centerX = (r.centerX() * scale - cropX)
+            val centerY = (r.centerY() * scale - cropY)
+            val width = (r.width() * scale * uiScale).coerceAtLeast(2f)
+            val height = (r.height() * scale * uiScale).coerceAtLeast(2f)
+
             drawRect(
                 Color.Cyan,
-                Offset(r.left * scale - cropX, r.top * scale - cropY),
-                androidx.compose.ui.geometry.Size((r.width() * scale).coerceAtLeast(2f), (r.height() * scale).coerceAtLeast(2f)),
-                style = Stroke(2.dp.toPx())
+                Offset(centerX - width / 2f, centerY - height / 2f),
+                androidx.compose.ui.geometry.Size(width, height),
+                style = Stroke(2.dp.toPx() * uiScale.coerceIn(.5f, 1.5f))
             )
         }
     }
 }
 
 @Composable
-private fun Settings(value: Float, onValue: (Float) -> Unit, close: () -> Unit, bluetooth: () -> Unit) {
+private fun Settings(
+    confidence: Float,
+    onConfidence: (Float) -> Unit,
+    targetUiScale: Float,
+    onTargetUiScale: (Float) -> Unit,
+    controlsVisible: Boolean,
+    onControlsVisible: (Boolean) -> Unit,
+    close: () -> Unit,
+    bluetooth: () -> Unit
+) {
     AlertDialog(
         onDismissRequest = close,
         title = { Text("Ai Fusion Camera Settings") },
         text = {
             Column {
-                Text("AI confidence ${(value * 100).toInt()}%")
-                Slider(value = value, onValueChange = onValue, valueRange = .35f..0.9f)
+                Text("AI confidence ${(confidence * 100).toInt()}%")
+                Slider(value = confidence, onValueChange = onConfidence, valueRange = .35f..0.9f)
+
+                Spacer(Modifier.height(8.dp))
+                Text("Target Object UI: ${(targetUiScale * 100).toInt()}%")
+                Text("Kecilkan atau besarkan kotak target yang muncul atas objek.", style = MaterialTheme.typography.bodySmall)
+                Slider(value = targetUiScale, onValueChange = onTargetUiScale, valueRange = .5f..1.5f)
+
+                Spacer(Modifier.height(8.dp))
+                Text("External buttons")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = controlsVisible, onCheckedChange = onControlsVisible)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (controlsVisible) "Files / USB / Settings: ON" else "Files / USB / Settings: OFF")
+                }
+
                 Text("Orientation: Auto • 16:9 / 9:16")
                 Text("Performance: automatic device profile")
                 Text("Files: Android Storage Access Framework")
