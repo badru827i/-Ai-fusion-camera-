@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -29,9 +29,26 @@ jobs:
         run: gradle --no-daemon :app:assembleDebug
       - name: Build release APK
         run: gradle --no-daemon :app:assembleRelease
+      - name: Read app version
+        id: version
+        shell: bash
+        run: echo "version=$(grep 'versionName =' app/build.gradle.kts | head -1 | sed -E 's/.*versionName = \"([^\"]+)\".*/\1/')" >> "$GITHUB_OUTPUT"
       - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
-          name: ai-fusion-camera-v3-apks
+          name: ai-fusion-camera-v${{ steps.version.outputs.version }}-apks
           path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          TAG="v${VERSION}"
+          APK="app/build/outputs/apk/release/app-release.apk"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+          else
+            gh release create "$TAG" "$APK" --title "Ai Fusion Camera v${VERSION}" --generate-notes
+          fi
