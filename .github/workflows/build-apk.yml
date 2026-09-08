@@ -21,12 +21,32 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Download Ultralytics YOLO11x and export INT8 TFLite
+      - name: Prepare YOLO11x INT8 TFLite model
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install ultralytics tensorflow
+
+          # LiteRT Torch currently requires torch < 2.14. Pin a matching
+          # torch/torchvision pair so pip cannot downgrade torch underneath
+          # the already-installed torchvision package during export.
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            "torch==2.13.0" "torchvision==0.28.0"
+
+          python -m pip install \
+            "ultralytics==8.4.143" \
+            "tensorflow==2.21.0" \
+            "litert-torch==0.9.4" \
+            "ai-edge-litert==2.2.0"
+
+          python - <<'PY'
+          import torch
+          import torchvision
+          print(f"torch={torch.__version__}")
+          print(f"torchvision={torchvision.__version__}")
+          PY
+
           mkdir -p app/src/main/assets
           python - <<'PY'
           from ultralytics import YOLO
@@ -39,14 +59,18 @@ jobs:
               data='coco8.yaml'
           )
           PY
-          TFLITE="$(find . -maxdepth 3 -type f -name 'yolo11x_full_integer_quant.tflite' -o -name 'yolo11x_integer_quant.tflite' | head -1)"
-          if [ -z "$TFLITE" ]; then
-            TFLITE="$(find . -type f -name '*yolo11x*.tflite' | head -1)"
-          fi
+
+          TFLITE="$(find . -type f \( \
+            -name 'yolo11x_full_integer_quant.tflite' -o \
+            -name 'yolo11x_integer_quant.tflite' -o \
+            -name '*yolo11x*.tflite' \
+          \) -print -quit)"
+
           if [ -z "$TFLITE" ]; then
             echo 'INT8 TFLite model was not generated'
             exit 1
           fi
+
           cp "$TFLITE" app/src/main/assets/yolo11x_int8.tflite
           ls -lh app/src/main/assets/yolo11x_int8.tflite
 
@@ -86,6 +110,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         shell: bash
         run: |
+          set -euo pipefail
           TAG="v${VERSION}"
           APK="$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -1)"
           if [ -z "$APK" ]; then
