@@ -35,6 +35,7 @@ import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -48,8 +49,62 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-data class BoxData(val rect: RectF, val sourceWidth: Int, val sourceHeight: Int, val rotationDegrees: Int)
+data class BoxData(
+    val rect: RectF,
+    val sourceWidth: Int,
+    val sourceHeight: Int,
+    val rotationDegrees: Int,
+    val label: String,
+    val confidence: Float
+)
 enum class DeviceTier { LOW, MID, FLAGSHIP }
+
+data class SavedDetection(
+    val timestamp: Long,
+    val label: String,
+    val confidence: Float,
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float
+)
+
+private object DetectionStore {
+    private const val PREFS = "ai_fusion_detection_history"
+    private const val KEY = "detections"
+    private const val MAX_RECORDS = 10000
+
+    @Synchronized
+    fun save(context: Context, detections: List<BoxData>) {
+        if (detections.isEmpty()) return
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val old = JSONArray(prefs.getString(KEY, "[]") ?: "[]")
+        val now = System.currentTimeMillis()
+        detections.forEach { d ->
+            old.put(JSONObject().apply {
+                put("timestamp", now)
+                put("label", d.label)
+                put("confidence", d.confidence)
+                put("left", d.rect.left)
+                put("top", d.rect.top)
+                put("right", d.rect.right)
+                put("bottom", d.rect.bottom)
+            })
+        }
+        val start = (old.length() - MAX_RECORDS).coerceAtLeast(0)
+        val result = JSONArray()
+        for (i in start until old.length()) result.put(old.getJSONObject(i))
+        prefs.edit().putString(KEY, result.toString()).apply()
+    }
+
+    fun count(context: Context): Int {
+        return try { JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, "[]") ?: "[]").length() } catch (_: Exception) { 0 }
+    }
+
+    fun clear(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY).apply()
+    }
+}
 
 private fun tier(context: Context): DeviceTier {
     val info = ActivityManager.MemoryInfo()
@@ -106,9 +161,10 @@ private fun AiFusionCamera() {
     var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     var settings by remember { mutableStateOf(false) }
     var confidence by remember { mutableFloatStateOf(.55f) }
-    var targetUiScale by remember { mutableFloatStateOf(1f) }
+    var targetUiScale by remember { mutableFloatStateOf(.75f) }
     var controlsVisible by remember { mutableStateOf(true) }
     var boxes by remember { mutableStateOf(emptyList<BoxData>()) }
+    var savedCount by remember { mutableIntStateOf(DetectionStore.count(context)) }
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var checkingUpdate by remember { mutableStateOf(false) }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
@@ -117,7 +173,11 @@ private fun AiFusionCamera() {
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (granted) {
-            CameraPreview(profile, confidence) { boxes = it }
+            CameraPreview(profile, confidence) { detected ->
+                boxes = detected
+                DetectionStore.save(context, detected)
+                savedCount = DetectionStore.count(context)
+            }
             BoxOverlay(boxes, Modifier.fillMaxSize(), targetUiScale)
         } else {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -152,6 +212,8 @@ private fun AiFusionCamera() {
             onTargetUiScale = { targetUiScale = it },
             controlsVisible = controlsVisible,
             onControlsVisible = { controlsVisible = it },
+            savedCount = savedCount,
+            onClearData = { DetectionStore.clear(context); savedCount = 0 },
             currentVersion = currentVersion(context),
             updateInfo = updateInfo,
             checkingUpdate = checkingUpdate,
@@ -192,7 +254,11 @@ private fun CameraPreview(profile: DeviceTier, confidence: Float, onBoxes: (List
                 if (image == null) { proxy.close(); return@setAnalyzer }
                 val rotation = proxy.imageInfo.rotationDegrees
                 detector.process(InputImage.fromMediaImage(image, rotation)).addOnSuccessListener { result ->
-                    onBoxes(result.map { o -> BoxData(RectF(o.boundingBox), image.width, image.height, rotation) })
+                    onBoxes(result.map { o ->
+                        val label = o.labels.maxByOrNull { it.confidence }?.text ?: "OBJECT"
+                        val score = o.labels.maxByOrNull { it.confidence }?.confidence ?: 0f
+                        BoxData(RectF(o.boundingBox), image.width, image.height, rotation, label, score)
+                    })
                 }.addOnCompleteListener { proxy.close() }
             }
             try { provider.unbindAll(); provider.bindToLifecycle(context as ComponentActivity, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis) } catch (_: Exception) { }
@@ -215,7 +281,20 @@ private fun BoxOverlay(boxes: List<BoxData>, modifier: Modifier, uiScale: Float)
             val centerY = r.centerY() * scale - cropY
             val width = (r.width() * scale * uiScale).coerceAtLeast(2f)
             val height = (r.height() * scale * uiScale).coerceAtLeast(2f)
-            drawRect(Color.Cyan, Offset(centerX - width / 2f, centerY - height / 2f), androidx.compose.ui.geometry.Size(width, height), style = Stroke(2.dp.toPx() * uiScale.coerceIn(.5f, 1.5f)))
+            val stroke = (1.5.dp.toPx() * uiScale.coerceIn(.45f, 1.2f)).coerceAtLeast(1f)
+            drawRect(Color.Cyan, Offset(centerX - width / 2f, centerY - height / 2f), androidx.compose.ui.geometry.Size(width, height), style = Stroke(stroke))
+
+            val labelText = if (box.confidence > 0f) "${box.label.uppercase()} ${(box.confidence * 100).toInt()}%" else box.label.uppercase()
+            val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.WHITE
+                textSize = (12.dp.toPx() * uiScale.coerceIn(.55f, 1.0f)).coerceAtLeast(8.dp.toPx())
+                typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            }
+            val fm = paint.fontMetrics
+            val textWidth = paint.measureText(labelText)
+            val textX = (centerX - width / 2f).coerceAtLeast(4f)
+            val textY = (centerY - height / 2f - 5.dp.toPx()).coerceAtLeast(-fm.top + 2f)
+            drawContext.canvas.nativeCanvas.drawText(labelText, textX, textY, paint)
         }
     }
 }
@@ -225,6 +304,7 @@ private fun Settings(
     confidence: Float, onConfidence: (Float) -> Unit,
     targetUiScale: Float, onTargetUiScale: (Float) -> Unit,
     controlsVisible: Boolean, onControlsVisible: (Boolean) -> Unit,
+    savedCount: Int, onClearData: () -> Unit,
     currentVersion: String, updateInfo: UpdateInfo?, checkingUpdate: Boolean,
     onCheckUpdate: () -> Unit, onOpenUpdate: (String) -> Unit,
     close: () -> Unit, bluetooth: () -> Unit
@@ -235,8 +315,13 @@ private fun Settings(
             Slider(value = confidence, onValueChange = onConfidence, valueRange = .35f..0.9f)
             Spacer(Modifier.height(8.dp))
             Text("Target Object UI: ${(targetUiScale * 100).toInt()}%")
-            Text("Kecilkan atau besarkan kotak target yang muncul atas objek.", style = MaterialTheme.typography.bodySmall)
-            Slider(value = targetUiScale, onValueChange = onTargetUiScale, valueRange = .5f..1.5f)
+            Text("Kotak + text detection dikecilkan. Default 75%.", style = MaterialTheme.typography.bodySmall)
+            Slider(value = targetUiScale, onValueChange = onTargetUiScale, valueRange = .45f..1.2f)
+            Spacer(Modifier.height(8.dp))
+            Text("Detection data disimpan: $savedCount rekod")
+            Text("Label, confidence, masa dan koordinat petak disimpan terus dalam telefon; tiada server diperlukan.", style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(onClick = onClearData, modifier = Modifier.fillMaxWidth(), enabled = savedCount > 0) { Text("Clear Saved Detection Data") }
             Spacer(Modifier.height(8.dp))
             Text("External buttons")
             Row(verticalAlignment = Alignment.CenterVertically) {
