@@ -1,0 +1,1 @@
+Build fix checkpoint: Files button syntax corrected. Existing detection, Settings, Files/USB, saved-data, update-check, and Target Object UI scaling logic preserved.
