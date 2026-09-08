@@ -14,68 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Prepare YOLO11x INT8 TFLite model
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-
-          # LiteRT Torch currently requires torch < 2.14. Pin a matching
-          # torch/torchvision pair so pip cannot downgrade torch underneath
-          # the already-installed torchvision package during export.
-          python -m pip install \
-            --index-url https://download.pytorch.org/whl/cpu \
-            "torch==2.13.0" "torchvision==0.28.0"
-
-          python -m pip install \
-            "ultralytics==8.4.143" \
-            "tensorflow==2.21.0" \
-            "litert-torch==0.9.4" \
-            "ai-edge-litert==2.2.0"
-
-          python - <<'PY'
-          import torch
-          import torchvision
-          print(f"torch={torch.__version__}")
-          print(f"torchvision={torchvision.__version__}")
-          PY
-
-          mkdir -p app/src/main/assets
-          python - <<'PY'
-          from ultralytics import YOLO
-
-          model = YOLO('https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11x.pt')
-          model.export(
-              format='tflite',
-              imgsz=640,
-              int8=True,
-              data='coco8.yaml'
-          )
-          PY
-
-          TFLITE="$(find . -type f \( \
-            -name 'yolo11x_full_integer_quant.tflite' -o \
-            -name 'yolo11x_integer_quant.tflite' -o \
-            -name '*yolo11x*.tflite' \
-          \) -print -quit)"
-
-          if [ -z "$TFLITE" ]; then
-            echo 'INT8 TFLite model was not generated'
-            exit 1
-          fi
-
-          cp "$TFLITE" app/src/main/assets/yolo11x_int8.tflite
-          ls -lh app/src/main/assets/yolo11x_int8.tflite
+        uses: actions/checkout@v6
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -87,15 +29,26 @@ jobs:
           gradle-version: '8.10.2'
 
       - name: Build debug APK
-        run: gradle --no-daemon :app:assembleDebug
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
 
       - name: Build release APK
-        run: gradle --no-daemon :app:assembleRelease
+        run: gradle --no-daemon --stacktrace :app:assembleRelease
 
       - name: Read app version
         id: version
         shell: bash
-        run: echo "version=$(grep 'versionName =' app/build.gradle.kts | head -1 | sed -E 's/.*versionName = \"([^\"]+)\".*/\1/')" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          VERSION="$(grep 'versionName =' app/build.gradle.kts | head -1 | sed -E 's/.*versionName = \"([^\"]+)\".*/\1/')"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify APK outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          find app/build/outputs/apk -type f -name '*.apk' -print
+          test -n "$(find app/build/outputs/apk -type f -name '*.apk' -print -quit)"
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
