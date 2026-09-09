@@ -1,0 +1,14 @@
+{
+  "name": "YOLO11x-Pose",
+  "source_format": "PyTorch .pt",
+  "runtime_status": "conversion_required",
+  "android_runtime": "ONNX Runtime or TensorFlow Lite",
+  "input_size": 640,
+  "confidence_threshold": 0.55,
+  "iou_threshold": 0.45,
+  "max_detections": 50,
+  "pose_keypoints": 17,
+  "raw_checkpoint_filename": "yolo11x-pose.pt",
+  "raw_checkpoint_size_bytes": 118481010,
+  "deployment_note": "Do not package the raw .pt checkpoint in the APK; use a converted optimized runtime model."
+}
