@@ -11,7 +11,6 @@ import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
-import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 
@@ -78,7 +77,7 @@ class YoloPoseDetector private constructor(private val interpreter: Interpreter)
         val candidates = ArrayList<Pose>()
         for (i in 0 until min(n, MAX)) {
             val cx = v(i, 0); val cy = v(i, 1); val w = v(i, 2); val h = v(i, 3)
-            val score = sigmoid(v(i, 4))
+            val score = v(i, 4).coerceIn(0f, 1f)
             if (score < threshold) continue
             val l = ((cx - w / 2f) / INPUT).coerceIn(0f, 1f)
             val t = ((cy - h / 2f) / INPUT).coerceIn(0f, 1f)
@@ -90,7 +89,7 @@ class YoloPoseDetector private constructor(private val interpreter: Interpreter)
                 val base = 5 + k * 3
                 kp[k * 3] = (v(i, base) / INPUT).coerceIn(0f, 1f)
                 kp[k * 3 + 1] = (v(i, base + 1) / INPUT).coerceIn(0f, 1f)
-                kp[k * 3 + 2] = sigmoid(v(i, base + 2))
+                kp[k * 3 + 2] = v(i, base + 2).coerceIn(0f, 1f)
             }
             candidates += Pose(android.graphics.RectF(l, t, r, b), score, kp)
         }
@@ -105,7 +104,6 @@ class YoloPoseDetector private constructor(private val interpreter: Interpreter)
         return result
     }
 
-    private fun sigmoid(x: Float) = if (x >= 0f) 1f / (1f + exp(-x)) else { val e = exp(x); e / (1f + e) }
     private fun iou(a: android.graphics.RectF, b: android.graphics.RectF): Float {
         val l = max(a.left, b.left); val t = max(a.top, b.top); val r = min(a.right, b.right); val bot = min(a.bottom, b.bottom)
         val inter = max(0f, r - l) * max(0f, bot - t)
