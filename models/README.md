@@ -2,7 +2,7 @@
 
 ## YOLO11x-Pose
 
-The Android app now contains a TensorFlow Lite runtime bridge for the supplied YOLO11x-Pose checkpoint. Android does **not** execute the raw PyTorch `.pt` file directly; the checkpoint must first be exported to a compatible `.tflite` deployment model. Ultralytics documents LiteRT/TFLite export for pose models at 640x640. citeturn385757search0turn385757search1
+The Android app now contains a TensorFlow Lite runtime bridge for the supplied YOLO11x-Pose checkpoint. Android does **not** execute the raw PyTorch `.pt` file directly; the checkpoint must first be exported to a compatible `.tflite` deployment model. Ultralytics documents LiteRT/TFLite export for pose models at 640x640.
 
 ### Expected deployment file
 
@@ -13,7 +13,7 @@ Place it in either:
 - `app/src/main/assets/yolo11x-pose.tflite`, or
 - import it from the app using **Import YOLO**, which copies it to the app-private `models/` directory.
 
-The Android bridge accepts the common raw YOLO pose output layout equivalent to 56 attributes x 8400 candidates for a single COCO person class: box + class score + 17 keypoints x 3 values. Ultralytics pose models expose 17 keypoints for COCO-Pose. citeturn385757search6turn385757search7
+The Android bridge accepts the common raw YOLO pose output layout equivalent to 56 attributes x 8400 candidates for a single COCO person class: box + class score + 17 keypoints x 3 values.
 
 ### Runtime behavior
 
@@ -29,4 +29,4 @@ The Android bridge accepts the common raw YOLO pose output layout equivalent to 
 yolo export model=yolo11x-pose.pt format=litert imgsz=640 batch=1
 ```
 
-The resulting model should be named `yolo11x-pose.tflite` and verified before importing into the app. Ultralytics currently recommends LiteRT for on-device deployment and lists 640 as the mobile input size for pose exports. citeturn385757search0
+The resulting model should be named `yolo11x-pose.tflite` and verified before importing into the app.
