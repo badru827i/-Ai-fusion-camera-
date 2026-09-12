@@ -22,14 +22,12 @@ class YoloPoseDetector private constructor(private val interpreter: Interpreter)
         private const val MAX = 8400
 
         fun load(context: Context): YoloPoseDetector? = try {
-            val active = ModelManager.activeFile(context)
-                ?: File(context.filesDir, "models").listFiles()
-                    ?.filter { it.extension.equals("tflite", ignoreCase = true) }
-                    ?.mapNotNull { file ->
-                        val registered = ModelManager.register(context, file)
-                        if (registered.state == ModelManager.ModelState.ACTIVE) file else null
-                    }
-                    ?.firstOrNull()
+            val candidates = File(context.filesDir, "models").listFiles()
+                ?.filter { it.extension.equals("tflite", ignoreCase = true) }
+                ?.filter { ModelManager.kindForFileName(it.name) == ModelManager.ModelKind.POSE }
+                ?.sortedBy { it.name }
+                .orEmpty()
+            val active = candidates.firstOrNull { ModelManager.register(context, it).state == ModelManager.ModelState.ACTIVE }
             active?.let { fromFile(it) }
         } catch (_: Throwable) { null }
 

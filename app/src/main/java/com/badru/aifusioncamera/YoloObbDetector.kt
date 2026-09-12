@@ -106,7 +106,7 @@ class YoloObbDetector private constructor(private val interpreter: Interpreter) 
             val r = ((cx + w / 2f) / INPUT).coerceIn(0f, 1f)
             val b = ((cy + h / 2f) / INPUT).coerceIn(0f, 1f)
             if (r <= l || b <= t) continue
-            val angle = if (attrCount > 5 + classCount) value(i, 4 + classCount) else 0f
+            val angle = value(i, attrCount - 1)
             out += Detection(android.graphics.RectF(l, t, r, b), bestScore, angle, bestClass)
         }
         out.sortByDescending { it.confidence }

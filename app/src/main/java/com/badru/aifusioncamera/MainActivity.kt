@@ -56,6 +56,8 @@ import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
+import kotlin.math.PI
+import androidx.compose.ui.graphics.drawscope.rotate
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,7 +66,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-data class BoxData(val rect: RectF, val sourceWidth: Int, val sourceHeight: Int, val rotationDegrees: Int, val label: String, val confidence: Float)
+data class BoxData(
+    val rect: RectF, val sourceWidth: Int, val sourceHeight: Int, val rotationDegrees: Int,
+    val label: String, val confidence: Float, val angle: Float = 0f,
+    val keypoints: FloatArray? = null, val model: String = "AI"
+)
 data class DetectionStat(val label: String, val count: Int, val confidence: Float)
 enum class DeviceTier { LOW, MID, FLAGSHIP }
 
@@ -101,16 +107,22 @@ private fun AiFusionCamera() {
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         val fileName = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
-        if (fileName?.lowercase()?.endsWith(".tflite") != true) {
-            modelText = "Import gagal • pilih fail .tflite"
+        val lower = fileName?.lowercase() ?: ""
+        val targetName = when {
+            lower.contains("obb") && lower.endsWith(".tflite") -> YoloObbDetector.MODEL_NAME
+            lower.contains("pose") && lower.endsWith(".tflite") -> YoloPoseDetector.MODEL_NAME
+            else -> null
+        }
+        if (targetName == null) {
+            modelText = "Import gagal • nama fail mesti mengandungi pose atau obb (.tflite)"
             return@rememberLauncherForActivityResult
         }
         try {
             val dir = File(context.filesDir, "models").apply { mkdirs() }
-            val target = File(dir, YoloPoseDetector.MODEL_NAME)
+            val target = File(dir, targetName)
             context.contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use { out -> input.copyTo(out) } }
             modelGeneration++
-            modelText = "YOLO11x-Pose imported • ${target.length() / (1024 * 1024)} MB"
+            modelText = "${if (targetName == YoloObbDetector.MODEL_NAME) "YOLO-OBB" else "YOLO11x-Pose"} imported • ${target.length() / (1024 * 1024)} MB"
         } catch (_: Exception) {
             modelText = "Import gagal"
         }
@@ -130,9 +142,14 @@ private fun AiFusionCamera() {
         if (cameraGranted) {
             key(modelGeneration) {
                 CameraPreview(profile, confidence, analysisFps, maxObjects,
-                    onStatus = { active ->
-                        yoloReady = active
-                        modelText = if (active) "YOLO11x-Pose • ACTIVE • 17 keypoints" else "ML Kit fallback • YOLO model not loaded"
+                    onStatus = { poseActive, obbActive ->
+                        yoloReady = poseActive || obbActive
+                        modelText = when {
+                            poseActive && obbActive -> "YOLO Pose + OBB • ACTIVE"
+                            poseActive -> "YOLO11x-Pose • ACTIVE • 17 keypoints"
+                            obbActive -> "YOLO-OBB • ACTIVE • rotated boxes"
+                            else -> "ML Kit fallback • YOLO models not loaded"
+                        }
                     },
                     onBoxes = { boxes = it })
             }
@@ -265,15 +282,16 @@ private fun Sparkline(values: List<Int>, modifier: Modifier) {
 }
 
 @Composable
-private fun CameraPreview(profile: DeviceTier, confidence: Float, analysisFps: Int, maxObjects: Int, onStatus: (Boolean) -> Unit, onBoxes: (List<BoxData>) -> Unit) {
+private fun CameraPreview(profile: DeviceTier, confidence: Float, analysisFps: Int, maxObjects: Int, onStatus: (Boolean, Boolean) -> Unit, onBoxes: (List<BoxData>) -> Unit) {
     val context = LocalContext.current
     val executor = remember { Executors.newSingleThreadExecutor() }
-    val yolo = remember { YoloPoseDetector.load(context) }
+    val pose = remember { YoloPoseDetector.load(context) }
+    val obb = remember { YoloObbDetector.load(context) }
     val mlKit = remember {
         ObjectDetection.getClient(ObjectDetectorOptions.Builder().setDetectorMode(ObjectDetectorOptions.STREAM_MODE).enableMultipleObjects().enableClassification().build())
     }
-    LaunchedEffect(Unit) { onStatus(yolo != null) }
-    DisposableEffect(Unit) { onDispose { yolo?.close(); mlKit.close(); executor.shutdown() } }
+    LaunchedEffect(Unit) { onStatus(pose != null, obb != null) }
+    DisposableEffect(Unit) { onDispose { pose?.close(); obb?.close(); mlKit.close(); executor.shutdown() } }
 
     AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
         val previewView = PreviewView(ctx).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
@@ -293,28 +311,36 @@ private fun CameraPreview(profile: DeviceTier, confidence: Float, analysisFps: I
                 val previous = lastAt.get()
                 val minInterval = (1000L / analysisFps.coerceIn(5, 30)).coerceAtLeast(33L)
                 if (now - previous < minInterval || !lastAt.compareAndSet(previous, now)) { proxy.close(); return@setAnalyzer }
-                if (yolo != null) {
-                    try {
-                        val poses = yolo.detect(proxy, confidence)
+                try {
+                    if (pose != null || obb != null) {
                         val sourceW = if (proxy.imageInfo.rotationDegrees % 180 == 0) proxy.width else proxy.height
                         val sourceH = if (proxy.imageInfo.rotationDegrees % 180 == 0) proxy.height else proxy.width
-                        onBoxes(poses.take(maxObjects).map { pose ->
-                            BoxData(RectF(pose.rect.left * sourceW, pose.rect.top * sourceH, pose.rect.right * sourceW, pose.rect.bottom * sourceH), sourceW, sourceH, 0, "PERSON", pose.confidence)
-                        })
-                    } catch (_: Throwable) { onBoxes(emptyList()) }
-                    finally { proxy.close() }
-                    return@setAnalyzer
+                        val combined = ArrayList<BoxData>()
+                        pose?.detect(proxy, confidence)?.take(maxObjects)?.forEach { d ->
+                            combined += BoxData(RectF(d.rect.left * sourceW, d.rect.top * sourceH, d.rect.right * sourceW, d.rect.bottom * sourceH), sourceW, sourceH, 0, "PERSON", d.confidence, keypoints = d.keypoints, model = "POSE")
+                        }
+                        obb?.detect(proxy, confidence)?.take(maxObjects)?.forEach { d ->
+                            combined += BoxData(RectF(d.rect.left * sourceW, d.rect.top * sourceH, d.rect.right * sourceW, d.rect.bottom * sourceH), sourceW, sourceH, 0, "OBB-${d.classIndex}", d.confidence, angle = d.angle, model = "OBB")
+                        }
+                        onBoxes(combined.sortedByDescending { it.confidence }.take(maxObjects * 2))
+                    } else {
+                        val image = proxy.image ?: return@setAnalyzer
+                        val rotation = proxy.imageInfo.rotationDegrees
+                        mlKit.process(InputImage.fromMediaImage(image, rotation)).addOnSuccessListener { results ->
+                            val detected = results.mapNotNull { item ->
+                                val best = item.labels.maxByOrNull { it.confidence }
+                                val score = best?.confidence ?: 0f
+                                if (score < confidence) null else BoxData(RectF(item.boundingBox), image.width, image.height, rotation, best?.text ?: "OBJECT", score, model = "MLKIT")
+                            }.sortedByDescending { it.confidence }.take(maxObjects)
+                            onBoxes(detected)
+                        }.addOnCompleteListener { proxy.close() }
+                        return@setAnalyzer
+                    }
+                } catch (_: Throwable) {
+                    onBoxes(emptyList())
+                } finally {
+                    if (pose != null || obb != null) proxy.close()
                 }
-                val image = proxy.image ?: run { proxy.close(); return@setAnalyzer }
-                val rotation = proxy.imageInfo.rotationDegrees
-                mlKit.process(InputImage.fromMediaImage(image, rotation)).addOnSuccessListener { results ->
-                    val detected = results.mapNotNull { item ->
-                        val best = item.labels.maxByOrNull { it.confidence }
-                        val score = best?.confidence ?: 0f
-                        if (score < confidence) null else BoxData(RectF(item.boundingBox), image.width, image.height, rotation, best?.text ?: "OBJECT", score)
-                    }.sortedByDescending { it.confidence }.take(maxObjects)
-                    onBoxes(detected)
-                }.addOnCompleteListener { proxy.close() }
             }
             try { provider.unbindAll(); provider.bindToLifecycle(context as ComponentActivity, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis) } catch (_: Exception) { }
         }, ContextCompat.getMainExecutor(ctx))
@@ -337,9 +363,21 @@ private fun BoxOverlay(boxes: List<BoxData>, modifier: Modifier, scale: Float) {
             val cy = rect.centerY() * previewScale - cropY
             val width = (rect.width() * previewScale * animatedScale).coerceAtLeast(2f)
             val height = (rect.height() * previewScale * animatedScale).coerceAtLeast(2f)
-            drawRect(Color.Cyan.copy(.92f), Offset(cx - width / 2f, cy - height / 2f), androidx.compose.ui.geometry.Size(width, height), style = Stroke(2.dp.toPx()))
+            val angle = box.angle * 180f / PI.toFloat()
+            rotate(degrees = angle, pivot = Offset(cx, cy)) {
+                drawRect(Color.Cyan.copy(.92f), Offset(cx - width / 2f, cy - height / 2f), androidx.compose.ui.geometry.Size(width, height), style = Stroke(2.dp.toPx()))
+            }
+            box.keypoints?.let { kp ->
+                for (i in 0 until minOf(17, kp.size / 3)) {
+                    if (kp[i * 3 + 2] >= .35f) {
+                        val x = kp[i * 3] * 640f * previewScale - cropX
+                        val y = kp[i * 3 + 1] * 640f * previewScale - cropY
+                        drawCircle(Color.Cyan, radius = 3.5f, center = Offset(x, y))
+                    }
+                }
+            }
             val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE; textSize = 12.dp.toPx(); typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD) }
-            drawIntoCanvas { canvas -> canvas.nativeCanvas.drawText("${box.label.uppercase()} ${(box.confidence * 100).toInt()}%", max(4f, cx - width / 2f), max(18f, cy - height / 2f - 4f), paint) }
+            drawIntoCanvas { canvas -> canvas.nativeCanvas.drawText("${box.model} ${box.label.uppercase()} ${(box.confidence * 100).toInt()}%", max(4f, cx - width / 2f), max(18f, cy - height / 2f - 4f), paint) }
         }
     }
 }
