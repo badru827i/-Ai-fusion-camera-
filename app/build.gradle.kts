@@ -12,8 +12,8 @@ android {
         applicationId = "com.badru.aifusioncamera"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "3.0.1"
+        versionCode = 5
+        versionName = "3.1.0"
     }
 
     buildTypes {
@@ -46,4 +46,5 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
     implementation("com.google.mlkit:object-detection:17.0.2")
+    implementation("org.tensorflow:tensorflow-lite:2.17.0")
 }
