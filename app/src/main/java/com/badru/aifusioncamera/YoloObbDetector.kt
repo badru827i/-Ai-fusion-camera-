@@ -1,4 +1,4 @@
-package com.badru.aifusioncamera
+package com.badru827i.aifusioncamera
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -25,18 +25,18 @@ class YoloObbDetector private constructor(private val interpreter: Interpreter) 
         private const val INPUT = 640
         private const val MAX = 8400
 
-        fun load(context: Context): YoloObbDetector? = try {
-            val imported = File(context.filesDir, "models/$MODEL_NAME")
-            if (!imported.exists() || imported.length() == 0L) return null
-            val stream = FileInputStream(imported)
-            val mapped = stream.channel.map(FileChannel.MapMode.READ_ONLY, 0, imported.length())
-            stream.close()
-            val options = Interpreter.Options().apply {
-                setNumThreads(max(2, min(4, Runtime.getRuntime().availableProcessors())))
-            }
-            YoloObbDetector(Interpreter(mapped, options))
-        } catch (_: Throwable) {
-            null
+        fun load(context: Context): YoloObbDetector? {
+            return try {
+                val imported = File(context.filesDir, "models/$MODEL_NAME")
+                if (!imported.exists() || imported.length() == 0L) return null
+                FileInputStream(imported).use { stream ->
+                    val mapped = stream.channel.map(FileChannel.MapMode.READ_ONLY, 0, imported.length())
+                    val options = Interpreter.Options().apply {
+                        setNumThreads(max(2, min(4, Runtime.getRuntime().availableProcessors())))
+                    }
+                    YoloObbDetector(Interpreter(mapped, options))
+                }
+            } catch (_: Throwable) { null }
         }
     }
 
@@ -106,7 +106,7 @@ class YoloObbDetector private constructor(private val interpreter: Interpreter) 
             val r = ((cx + w / 2f) / INPUT).coerceIn(0f, 1f)
             val b = ((cy + h / 2f) / INPUT).coerceIn(0f, 1f)
             if (r <= l || b <= t) continue
-            val angle = value(i, attrCount - 1)
+            val angle = if (attrCount > 5 + classCount) value(i, 4 + classCount) else 0f
             out += Detection(android.graphics.RectF(l, t, r, b), bestScore, angle, bestClass)
         }
         out.sortByDescending { it.confidence }
