@@ -1,0 +1,25 @@
+name: Integrate OBB + Pose
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Apply integration patch
+        run: python tools/integrate_obb_pose.py
+      - name: Commit changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/badru/aifusioncamera
+          git diff --cached --quiet || git commit -m 'Integrate YOLO OBB and Pose into camera pipeline'
+          git push
