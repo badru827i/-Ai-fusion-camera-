@@ -1,22 +1,32 @@
 # AI Model Integration
 
-## YOLO11x-Pose supplied by the project owner
+## YOLO11x-Pose
 
-The Android app is prepared to use a YOLO pose model, but the supplied `yolo11x-pose.pt` is a PyTorch/Ultralytics checkpoint. A raw `.pt` checkpoint is **not directly executable by Android**.
+The Android app now contains a TensorFlow Lite runtime bridge for the supplied YOLO11x-Pose checkpoint. Android does **not** execute the raw PyTorch `.pt` file directly; the checkpoint must first be exported to a compatible `.tflite` deployment model. Ultralytics documents LiteRT/TFLite export for pose models at 640x640. citeturn385757search0turn385757search1
 
-### Required runtime artifact
+### Expected deployment file
 
-Convert the checkpoint to one of these Android-friendly formats:
+`yolo11x-pose.tflite`
 
-- **ONNX** — recommended for an ONNX Runtime based detector.
-- **TensorFlow Lite (`.tflite`)** — recommended for a fully Android-native deployment.
+Place it in either:
 
-The conversion must preserve the YOLO11 pose output (person/object boxes plus 17-keypoint pose data where applicable).
+- `app/src/main/assets/yolo11x-pose.tflite`, or
+- import it from the app using **Import YOLO**, which copies it to the app-private `models/` directory.
 
-### Important
+The Android bridge accepts the common raw YOLO pose output layout equivalent to 56 attributes x 8400 candidates for a single COCO person class: box + class score + 17 keypoints x 3 values. Ultralytics pose models expose 17 keypoints for COCO-Pose. citeturn385757search6turn385757search7
 
-Do not put the 118 MB raw checkpoint inside the APK. It would make the application unnecessarily large and slow to install/update. Store the converted, optimized runtime model as a release asset or download it on first run with checksum verification.
+### Runtime behavior
 
-### Current fallback
+1. CameraX sends frames to the analyzer.
+2. If `yolo11x-pose.tflite` is available, YOLO11x-Pose becomes the primary offline detector.
+3. Detection boxes are rendered in the existing HUD as `PERSON` + confidence.
+4. If the model is not installed, the existing ML Kit detector remains active as a fallback so the camera still works.
+5. The raw 118 MB `.pt` checkpoint is not packaged into the APK.
 
-Until the runtime model is converted, the app continues to use its existing ML Kit realtime object detector so the camera remains functional.
+### Export example
+
+```bash
+yolo export model=yolo11x-pose.pt format=litert imgsz=640 batch=1
+```
+
+The resulting model should be named `yolo11x-pose.tflite` and verified before importing into the app. Ultralytics currently recommends LiteRT for on-device deployment and lists 640 as the mobile input size for pose exports. citeturn385757search0
