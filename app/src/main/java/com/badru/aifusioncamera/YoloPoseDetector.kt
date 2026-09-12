@@ -22,21 +22,24 @@ class YoloPoseDetector private constructor(private val interpreter: Interpreter)
         private const val MAX = 8400
 
         fun load(context: Context): YoloPoseDetector? = try {
-            val imported = File(context.filesDir, "models/$MODEL_NAME")
-            val file = if (imported.exists() && imported.length() > 0) imported else null
-            if (file != null) fromFile(file) else {
-                val dir = File(context.filesDir, "models").apply { mkdirs() }
-                val target = File(dir, MODEL_NAME)
-                context.assets.open(MODEL_NAME).use { input -> target.outputStream().use { input.copyTo(it) } }
-                fromFile(target)
-            }
+            val active = ModelManager.activeFile(context)
+                ?: File(context.filesDir, "models").listFiles()
+                    ?.filter { it.extension.equals("tflite", ignoreCase = true) }
+                    ?.mapNotNull { file ->
+                        val registered = ModelManager.register(context, file)
+                        if (registered.state == ModelManager.ModelState.ACTIVE) file else null
+                    }
+                    ?.firstOrNull()
+            active?.let { fromFile(it) }
         } catch (_: Throwable) { null }
 
         private fun fromFile(file: File): YoloPoseDetector {
             val stream = FileInputStream(file)
             val mapped = stream.channel.map(FileChannel.MapMode.READ_ONLY, 0, file.length())
             stream.close()
-            val options = Interpreter.Options().apply { setNumThreads(max(2, min(4, Runtime.getRuntime().availableProcessors()))) }
+            val options = Interpreter.Options().apply {
+                setNumThreads(max(2, min(4, Runtime.getRuntime().availableProcessors())))
+            }
             return YoloPoseDetector(Interpreter(mapped, options))
         }
     }
