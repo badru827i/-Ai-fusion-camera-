@@ -40,6 +40,7 @@ import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
@@ -125,10 +126,25 @@ private fun AiFusionCamera() {
     var savedCount by remember { mutableIntStateOf(DetectionStore.count(context)) }
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var checkingUpdate by remember { mutableStateOf(false) }
+    var modelGeneration by remember { mutableIntStateOf(0) }
+    var modelStatus by remember { mutableStateOf("YOLO11x-Pose: model belum dimuat — ML Kit fallback") }
     val lastPersistAt = remember { AtomicLong(0L) }
     val storageExecutor = remember { Executors.newSingleThreadExecutor() }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
-    val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { }
+    val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        if (name?.lowercase()?.endsWith(".tflite") != true) { modelStatus = "Pilih fail YOLO .tflite"; return@rememberLauncherForActivityResult }
+        try {
+            val dir = File(context.filesDir, "models").apply { mkdirs() }
+            val target = File(dir, YoloPoseDetector.MODEL_NAME)
+            context.contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+            modelGeneration++
+            modelStatus = "YOLO11x-Pose dimuat: ${target.length() / (1024 * 1024)} MB"
+        } catch (_: Exception) {
+            modelStatus = "Gagal import model YOLO"
+        }
+    }
     val tree = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { }
     DisposableEffect(Unit) { onDispose { storageExecutor.shutdown() } }
     fun persistDetections(detected: List<BoxData>) {
@@ -140,7 +156,11 @@ private fun AiFusionCamera() {
     }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (granted) {
-            CameraPreview(profile, confidence, analysisFps, maxObjects) { detected -> boxes = detected; persistDetections(detected) }
+            CameraPreview(profile, confidence, analysisFps, maxObjects, modelGeneration) { detected, yoloActive ->
+                boxes = detected
+                if (yoloActive) modelStatus = "YOLO11x-Pose: ACTIVE • 17 keypoints model"
+                persistDetections(detected)
+            }
             BoxOverlay(boxes, Modifier.fillMaxSize(), targetUiScale)
         } else {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -150,14 +170,15 @@ private fun AiFusionCamera() {
         Surface(modifier = Modifier.align(Alignment.TopCenter).padding(12.dp), color = Color.Black.copy(alpha = .55f), shape = RoundedCornerShape(16.dp)) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
                 Text("AI FUSION CAMERA", color = Color.White, style = MaterialTheme.typography.titleMedium)
-                Text("V3  •  ${profile.name}  •  AI ULTRA  •  AUTO ROTATION", color = Color.White.copy(.72f), style = MaterialTheme.typography.labelSmall)
+                Text("V3  •  ${profile.name}  •  AI ULTRA  •  YOLO11x-POSE", color = Color.White.copy(.72f), style = MaterialTheme.typography.labelSmall)
+                Text(modelStatus, color = Color.White.copy(.82f), style = MaterialTheme.typography.labelSmall)
             }
         }
         FilledTonalButton(onClick = { controlsVisible = !controlsVisible }, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) { Text(if (controlsVisible) "Hide UI" else "Show UI") }
         if (controlsVisible) {
             Card(Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(start = 10.dp, end = 88.dp, bottom = 10.dp), shape = RoundedCornerShape(16.dp)) {
                 Row(Modifier.fillMaxWidth().padding(6.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    Button(onClick = { files.launch(arrayOf("image/*", "video/*", "application/*", "text/*")) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp)) { Text("Files") }
+                    Button(onClick = { files.launch(arrayOf("application/octet-stream", "*/*")) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp)) { Text("Import YOLO") }
                     Button(onClick = { tree.launch(null) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp)) { Text("USB / Drive") }
                     Button(onClick = { settings = true }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp)) { Text("Settings") }
                 }
@@ -168,11 +189,12 @@ private fun AiFusionCamera() {
 }
 
 @Composable
-private fun CameraPreview(profile: DeviceTier, confidence: Float, analysisFps: Int, maxObjects: Int, onBoxes: (List<BoxData>) -> Unit) {
+private fun CameraPreview(profile: DeviceTier, confidence: Float, analysisFps: Int, maxObjects: Int, modelGeneration: Int, onBoxes: (List<BoxData>, Boolean) -> Unit) {
     val context = LocalContext.current
     val executor = remember { Executors.newSingleThreadExecutor() }
+    val yolo = remember(modelGeneration) { YoloPoseDetector.load(context) }
     val detector = remember { ObjectDetection.getClient(ObjectDetectorOptions.Builder().setDetectorMode(ObjectDetectorOptions.STREAM_MODE).enableMultipleObjects().enableClassification().build()) }
-    DisposableEffect(Unit) { onDispose { detector.close(); executor.shutdown() } }
+    DisposableEffect(yolo) { onDispose { yolo?.close(); detector.close(); executor.shutdown() } }
     AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
         val view = PreviewView(ctx).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
         val future = ProcessCameraProvider.getInstance(ctx)
@@ -184,6 +206,20 @@ private fun CameraPreview(profile: DeviceTier, confidence: Float, analysisFps: I
             analysis.setAnalyzer(executor) { proxy ->
                 val now = System.currentTimeMillis(); val previous = lastAnalysisAt.get(); val minInterval = (1000L / analysisFps.coerceIn(5, 30)).coerceAtLeast(33L)
                 if (now - previous < minInterval || !lastAnalysisAt.compareAndSet(previous, now)) { proxy.close(); return@setAnalyzer }
+                if (yolo != null) {
+                    try {
+                        val poses = yolo.detect(proxy, confidence)
+                        val sourceW = if (proxy.imageInfo.rotationDegrees % 180 == 0) proxy.width else proxy.height
+                        val sourceH = if (proxy.imageInfo.rotationDegrees % 180 == 0) proxy.height else proxy.width
+                        val detected = poses.take(maxObjects.coerceIn(1, 20)).map { pose ->
+                            BoxData(RectF(pose.rect.left * sourceW, pose.rect.top * sourceH, pose.rect.right * sourceW, pose.rect.bottom * sourceH), sourceW, sourceH, 0, "PERSON", pose.confidence)
+                        }
+                        onBoxes(detected, true)
+                    } catch (_: Throwable) {
+                        onBoxes(emptyList(), true)
+                    } finally { proxy.close() }
+                    return@setAnalyzer
+                }
                 val image = proxy.image ?: run { proxy.close(); return@setAnalyzer }
                 val rotation = proxy.imageInfo.rotationDegrees
                 detector.process(InputImage.fromMediaImage(image, rotation)).addOnSuccessListener { result ->
@@ -192,7 +228,7 @@ private fun CameraPreview(profile: DeviceTier, confidence: Float, analysisFps: I
                         val score = best?.confidence ?: 0f
                         if (score < confidence) null else BoxData(RectF(objectResult.boundingBox), image.width, image.height, rotation, best?.text ?: "OBJECT", score)
                     }.sortedByDescending { it.confidence }.take(maxObjects.coerceIn(1, 50))
-                    onBoxes(detected)
+                    onBoxes(detected, false)
                 }.addOnCompleteListener { proxy.close() }
             }
             try { provider.unbindAll(); provider.bindToLifecycle(context as ComponentActivity, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis) } catch (_: Exception) { }
