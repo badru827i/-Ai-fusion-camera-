@@ -1,14 +1,16 @@
 {
   "name": "YOLO11x-Pose",
   "source_format": "PyTorch .pt",
-  "runtime_status": "conversion_required",
-  "android_runtime": "ONNX Runtime or TensorFlow Lite",
+  "runtime_status": "android_tflite_runtime_integrated",
+  "android_runtime": "TensorFlow Lite 2.17 interpreter",
   "input_size": 640,
   "confidence_threshold": 0.55,
   "iou_threshold": 0.45,
-  "max_detections": 50,
+  "max_detections": 20,
   "pose_keypoints": 17,
   "raw_checkpoint_filename": "yolo11x-pose.pt",
   "raw_checkpoint_size_bytes": 118481010,
-  "deployment_note": "Do not package the raw .pt checkpoint in the APK; use a converted optimized runtime model."
+  "deployment_model_filename": "yolo11x-pose.tflite",
+  "deployment_model_location": "app private storage models/ or app/src/main/assets/",
+  "deployment_note": "The Android app now runs YOLO11x-Pose when a compatible exported .tflite model is present. The raw .pt checkpoint is not executed on Android."
 }
