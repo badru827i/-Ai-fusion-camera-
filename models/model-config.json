@@ -1,16 +1,45 @@
 {
-  "name": "YOLO11x-Pose",
-  "source_format": "PyTorch .pt",
-  "runtime_status": "android_tflite_runtime_integrated",
-  "android_runtime": "TensorFlow Lite 2.17 interpreter",
-  "input_size": 640,
-  "confidence_threshold": 0.55,
-  "iou_threshold": 0.45,
-  "max_detections": 20,
-  "pose_keypoints": 17,
-  "raw_checkpoint_filename": "yolo11x-pose.pt",
-  "raw_checkpoint_size_bytes": 118481010,
-  "deployment_model_filename": "yolo11x-pose.tflite",
-  "deployment_model_location": "app private storage models/ or app/src/main/assets/",
-  "deployment_note": "The Android app now runs YOLO11x-Pose when a compatible exported .tflite model is present. The raw .pt checkpoint is not executed on Android."
+  "ai_engine": {
+    "name": "Ai Fusion Camera AI",
+    "primary_runtime": "TensorFlow Lite 2.17 interpreter",
+    "fallback_runtime": "Google ML Kit",
+    "offline": true
+  },
+  "models": {
+    "pose": {
+      "name": "YOLO11x-Pose",
+      "source_format": "PyTorch .pt",
+      "raw_checkpoint_filename": "yolo11x-pose.pt",
+      "raw_checkpoint_size_bytes": 118481010,
+      "raw_checkpoint_sha256": "013c43543b0751b8918486ba96e01ee44a59040683a07f96cc22bcc2cb7785f8",
+      "deployment_model_filename": "yolo11x-pose.tflite",
+      "deployment_model_location": "app private storage models/ or app/src/main/assets/",
+      "input_size": 640,
+      "confidence_threshold": 0.55,
+      "iou_threshold": 0.45,
+      "max_detections": 20,
+      "pose_keypoints": 17,
+      "enabled": true
+    },
+    "obb": {
+      "name": "YOLO11x-OBB",
+      "source_format": "PyTorch .pt",
+      "raw_checkpoint_filename": "yolo11x-obb.pt",
+      "raw_checkpoint_size_bytes": 118438668,
+      "raw_checkpoint_sha256": "1461342db1ce0f35c755278303febd1174604ccc375110076fa0ac155231b6a0",
+      "deployment_model_filename": "yolo11x-obb.tflite",
+      "deployment_model_location": "app private storage models/ or app/src/main/assets/",
+      "input_size": 640,
+      "confidence_threshold": 0.55,
+      "iou_threshold": 0.45,
+      "max_detections": 20,
+      "enabled": true,
+      "deployment_status": "checkpoint_registered_requires_tflite_export"
+    }
+  },
+  "data_policy": {
+    "save_model_metadata": true,
+    "save_detection_history": true,
+    "raw_pt_in_apk": false
+  }
 }
