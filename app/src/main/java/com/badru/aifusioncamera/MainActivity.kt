@@ -8,7 +8,6 @@ import android.content.pm.PackageManager
 import android.graphics.RectF
 import android.net.Uri
 import android.os.Bundle
-import android.os.Handler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -31,6 +30,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
@@ -52,11 +52,7 @@ import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
@@ -68,55 +64,17 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-data class BoxData(val rect: RectF, val sourceWidth: Int, val sourceHeight: Int, val rotationDegrees: Int, val label: String, val confidence: Float)
-enum class DeviceTier { LOW, MID, FLAGSHIP }
-
-data class DetectionStat(val label: String, val count: Int, val confidence: Float)
-
-data class AiUltraConfig(
-    val confidence: Float = .55f,
-    val targetUiScale: Float = .60f,
-    val analysisFps: Int = 15,
-    val maxObjects: Int = 10,
-    val saveIntervalMs: Long = 750L
+data class BoxData(
+    val rect: RectF,
+    val sourceWidth: Int,
+    val sourceHeight: Int,
+    val rotationDegrees: Int,
+    val label: String,
+    val confidence: Float
 )
 
-private object DetectionStore {
-    private const val PREFS = "ai_fusion_detection_history"
-    private const val KEY = "detections"
-    private const val MAX_RECORDS = 10000
-
-    @Synchronized
-    fun save(context: Context, detections: List<BoxData>) {
-        if (detections.isEmpty()) return
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val old = try { JSONArray(prefs.getString(KEY, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
-        val now = System.currentTimeMillis()
-        detections.forEach { d ->
-            old.put(JSONObject().apply {
-                put("timestamp", now)
-                put("label", d.label)
-                put("confidence", d.confidence)
-                put("left", d.rect.left)
-                put("top", d.rect.top)
-                put("right", d.rect.right)
-                put("bottom", d.rect.bottom)
-            })
-        }
-        val start = (old.length() - MAX_RECORDS).coerceAtLeast(0)
-        val result = JSONArray()
-        for (i in start until old.length()) result.put(old.getJSONObject(i))
-        prefs.edit().putString(KEY, result.toString()).apply()
-    }
-
-    fun count(context: Context): Int = try {
-        JSONArray(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, "[]") ?: "[]").length()
-    } catch (_: Exception) { 0 }
-
-    fun clear(context: Context) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY).apply()
-    }
-}
+data class DetectionStat(val label: String, val count: Int, val confidence: Float)
+enum class DeviceTier { LOW, MID, FLAGSHIP }
 
 private fun tier(context: Context): DeviceTier {
     val info = ActivityManager.MemoryInfo()
@@ -124,104 +82,52 @@ private fun tier(context: Context): DeviceTier {
     val ramGb = info.totalMem / (1024.0 * 1024.0 * 1024.0)
     val cores = Runtime.getRuntime().availableProcessors()
     return when {
-        cores >= 8 && ramGb >= 8.0 -> DeviceTier.FLAGSHIP
-        cores >= 6 && ramGb >= 5.0 -> DeviceTier.MID
+        cores >= 8 && ramGb >= 8 -> DeviceTier.FLAGSHIP
+        cores >= 6 && ramGb >= 5 -> DeviceTier.MID
         else -> DeviceTier.LOW
     }
-}
-
-private data class UpdateInfo(val available: Boolean, val version: String? = null, val releaseUrl: String? = null, val error: String? = null)
-
-private fun currentVersion(context: Context): String =
-    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "3.0.0"
-
-private fun compareVersions(current: String, latest: String): Int {
-    val a = current.removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
-    val b = latest.removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
-    for (i in 0 until max(a.size, b.size)) {
-        val av = a.getOrElse(i) { 0 }
-        val bv = b.getOrElse(i) { 0 }
-        if (av != bv) return av.compareTo(bv)
-    }
-    return 0
-}
-
-private fun checkForUpdate(context: Context): UpdateInfo = try {
-    val connection = (URL("https://api.github.com/repos/badru827i/-Ai-fusion-camera-/releases/latest").openConnection() as HttpURLConnection).apply {
-        requestMethod = "GET"
-        connectTimeout = 8000
-        readTimeout = 8000
-        setRequestProperty("Accept", "application/vnd.github+json")
-        setRequestProperty("User-Agent", "Ai-Fusion-Camera")
-    }
-    if (connection.responseCode !in 200..299) {
-        connection.disconnect()
-        UpdateInfo(false, error = "No published release yet")
-    } else {
-        val root = connection.inputStream.bufferedReader().use { JSONObject(it.readText()) }
-        connection.disconnect()
-        val latest = root.optString("tag_name").removePrefix("v")
-        UpdateInfo(compareVersions(currentVersion(context), latest) < 0, latest, root.optString("html_url"))
-    }
-} catch (_: Exception) {
-    UpdateInfo(false, error = "Unable to check for updates")
 }
 
 @Composable
 private fun AiFusionCamera() {
     val context = LocalContext.current
     val profile = remember { tier(context) }
-    var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
-    var settings by remember { mutableStateOf(false) }
-    var analyticsVisible by remember { mutableStateOf(true) }
+    var cameraGranted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
+    var settingsOpen by remember { mutableStateOf(false) }
+    var analyticsOpen by remember { mutableStateOf(true) }
     var confidence by remember { mutableFloatStateOf(.55f) }
-    var targetUiScale by remember { mutableFloatStateOf(.60f) }
-    var analysisFps by remember { mutableIntStateOf(15) }
-    var maxObjects by remember { mutableIntStateOf(10) }
-    var saveIntervalMs by remember { mutableLongStateOf(750L) }
-    var controlsVisible by remember { mutableStateOf(true) }
-    var boxes by remember { mutableStateOf(emptyList<BoxData>()) }
-    var graphHistory by remember { mutableStateOf(listOf(0)) }
-    var savedCount by remember { mutableIntStateOf(DetectionStore.count(context)) }
-    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
-    var checkingUpdate by remember { mutableStateOf(false) }
+    var analysisFps by remember { mutableIntStateOf(if (profile == DeviceTier.LOW) 10 else 15) }
+    var maxObjects by remember { mutableIntStateOf(20) }
+    var boxScale by remember { mutableFloatStateOf(.72f) }
     var modelGeneration by remember { mutableIntStateOf(0) }
-    var modelStatus by remember { mutableStateOf("YOLO11x-Pose: model belum dimuat • ML Kit fallback") }
-    val lastPersistAt = remember { AtomicLong(0L) }
-    val storageExecutor = remember { Executors.newSingleThreadExecutor() }
-    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
-    val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+    var yoloReady by remember { mutableStateOf(false) }
+    var boxes by remember { mutableStateOf(emptyList<BoxData>()) }
+    var graph by remember { mutableStateOf(listOf(0)) }
+    var modelText by remember { mutableStateOf("Checking YOLO11x-Pose…") }
+
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { cameraGranted = it }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
-        val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
-        if (name?.lowercase()?.endsWith(".tflite") != true) {
-            modelStatus = "Pilih fail YOLO .tflite"
+        val fileName = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+        if (fileName?.lowercase()?.endsWith(".tflite") != true) {
+            modelText = "Import gagal • pilih fail .tflite"
             return@rememberLauncherForActivityResult
         }
         try {
             val dir = File(context.filesDir, "models").apply { mkdirs() }
             val target = File(dir, YoloPoseDetector.MODEL_NAME)
-            context.contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+            context.contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use { out -> input.copyTo(out) } }
             modelGeneration++
-            modelStatus = "YOLO11x-Pose dimuat • ${target.length() / (1024 * 1024)} MB"
+            modelText = "YOLO11x-Pose imported • ${target.length() / (1024 * 1024)} MB"
         } catch (_: Exception) {
-            modelStatus = "Gagal import model YOLO"
+            modelText = "Import gagal"
         }
-    }
-    val tree = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { }
-
-    DisposableEffect(Unit) { onDispose { storageExecutor.shutdown() } }
-
-    fun persistDetections(detected: List<BoxData>) {
-        if (detected.isEmpty()) return
-        val now = System.currentTimeMillis()
-        val previous = lastPersistAt.get()
-        if (now - previous < saveIntervalMs || !lastPersistAt.compareAndSet(previous, now)) return
-        savedCount = (savedCount + detected.size).coerceAtMost(10000)
-        storageExecutor.execute { DetectionStore.save(context, detected) }
     }
 
     LaunchedEffect(boxes.size) {
-        graphHistory = (graphHistory + boxes.size).takeLast(28)
+        graph = (graph + boxes.size).takeLast(30)
     }
 
     val stats = remember(boxes) {
@@ -229,162 +135,128 @@ private fun AiFusionCamera() {
             .map { (label, list) -> DetectionStat(label, list.size, list.map { it.confidence }.average().toFloat()) }
             .sortedByDescending { it.count }
     }
-    val totalObjects = boxes.size
-    val avgConfidence = if (boxes.isEmpty()) 0f else boxes.map { it.confidence }.average().toFloat()
+    val total = boxes.size
+    val avg = if (boxes.isEmpty()) 0f else boxes.map { it.confidence }.average().toFloat()
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        if (granted) {
-            CameraPreview(profile, confidence, analysisFps, maxObjects, modelGeneration) { detected, yoloActive ->
-                boxes = detected
-                modelStatus = if (yoloActive) "YOLO11x-Pose • ACTIVE • 17 keypoints" else if (modelStatus.startsWith("YOLO11x-Pose: ACTIVE")) modelStatus else "ML Kit realtime fallback"
-                persistDetections(detected)
+        if (cameraGranted) {
+            key(modelGeneration) {
+                CameraPreview(
+                    profile = profile,
+                    confidence = confidence,
+                    analysisFps = analysisFps,
+                    maxObjects = maxObjects,
+                    onStatus = { active ->
+                        yoloReady = active
+                        modelText = if (active) "YOLO11x-Pose • ACTIVE • 17 keypoints" else if (!File(context, "").exists()) "ML Kit fallback • YOLO model not loaded" else modelText
+                    },
+                    onBoxes = { boxes = it }
+                )
             }
-            BoxOverlay(boxes, Modifier.fillMaxSize(), targetUiScale)
+            BoxOverlay(boxes = boxes, modifier = Modifier.fillMaxSize(), scale = boxScale)
         } else {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Default.CameraAlt, null, tint = Color.Cyan, modifier = Modifier.size(42.dp))
+                Spacer(Modifier.height(10.dp))
                 Text("Camera permission diperlukan", color = Color.White)
                 Spacer(Modifier.height(12.dp))
-                Button(onClick = { cameraPermission.launch(Manifest.permission.CAMERA) }) { Text("Allow Camera") }
+                Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) { Text("Allow Camera") }
             }
         }
 
-        // Premium camera header.
         Surface(
             modifier = Modifier.align(Alignment.TopCenter).padding(12.dp),
             color = Color.Black.copy(alpha = .58f),
-            shape = RoundedCornerShape(20.dp),
-            tonalElevation = 6.dp
+            shape = RoundedCornerShape(22.dp),
+            tonalElevation = 8.dp
         ) {
             Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Visibility, null, tint = Color.Cyan, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
                 Column {
-                    Text("NEXA VISION", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("AI CAMERA  •  ${profile.name}", color = Color.White.copy(.68f), style = MaterialTheme.typography.labelSmall)
+                    Text("NEXA VISION", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text(modelText, color = Color.White.copy(.62f), style = MaterialTheme.typography.labelSmall)
                 }
-                Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.width(10.dp))
                 Surface(color = Color(0x3322FFAA), shape = RoundedCornerShape(999.dp)) {
-                    Text("● LIVE", color = Color(0xFF55FFB0), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                    Text(if (yoloReady) "YOLO" else "AI", color = Color(0xFF55FFB0), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
                 }
             }
         }
 
-        // Live analytics panel: total + graph + every detected object.
         AnimatedVisibility(
-            visible = analyticsVisible,
-            enter = fadeIn(spring()) ,
+            visible = analyticsOpen,
+            enter = fadeIn(spring(stiffness = 550f)),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopEnd).padding(top = 82.dp, end = 10.dp)
         ) {
-            AnalyticsPanel(
-                totalObjects = totalObjects,
-                avgConfidence = avgConfidence,
-                stats = stats,
-                graphHistory = graphHistory
-            )
+            AnalyticsPanel(total, avg, stats, graph)
         }
 
-        // Bottom action dock.
         Surface(
-            modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 10.dp, vertical = 10.dp),
-            color = Color.Black.copy(alpha = .70f),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(10.dp),
+            color = Color.Black.copy(alpha = .76f),
             shape = RoundedCornerShape(22.dp),
-            tonalElevation = 8.dp
+            tonalElevation = 10.dp
         ) {
-            Column(Modifier.padding(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(color = Color(0x241AA6FF), shape = RoundedCornerShape(999.dp)) {
-                        Text("DETECTED  $totalObjects", color = Color.Cyan, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
-                    }
-                    Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { analyticsVisible = !analyticsVisible }) { Icon(Icons.Default.Analytics, "Toggle analytics", tint = Color.White) }
-                    IconButton(onClick = { settings = true }) { Icon(Icons.Default.Tune, "Open settings", tint = Color.White) }
+            Row(Modifier.padding(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                Surface(color = Color.Cyan.copy(alpha = .10f), shape = RoundedCornerShape(999.dp)) {
+                    Text("$total OBJECTS", color = Color.Cyan, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
                 }
-                AnimatedVisibility(visible = controlsVisible) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        Button(onClick = { files.launch(arrayOf("application/octet-stream", "*/*")) }, shape = RoundedCornerShape(14.dp)) { Text("Import YOLO") }
-                        Button(onClick = { tree.launch(null) }, shape = RoundedCornerShape(14.dp)) { Text("Drive") }
-                        Button(onClick = { controlsVisible = false }, shape = RoundedCornerShape(14.dp)) { Text("Minimal") }
-                    }
-                }
-                if (!controlsVisible) {
-                    TextButton(onClick = { controlsVisible = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Show controls") }
-                }
+                Spacer(Modifier.width(6.dp))
+                IconButton(onClick = { analyticsOpen = !analyticsOpen }) { Icon(Icons.Default.Analytics, "Analytics", tint = Color.White) }
+                IconButton(onClick = { settingsOpen = true }) { Icon(Icons.Default.Tune, "Settings", tint = Color.White) }
+                IconButton(onClick = { importLauncher.launch(arrayOf("application/octet-stream", "*/*")) }) { Icon(Icons.Default.Visibility, "Import YOLO model", tint = Color.Cyan) }
             }
         }
     }
 
-    if (settings) {
+    if (settingsOpen) {
         SettingsSheet(
             confidence = confidence,
             onConfidence = { confidence = it },
-            targetUiScale = targetUiScale,
-            onTargetUiScale = { targetUiScale = it },
             analysisFps = analysisFps,
-            onAnalysisFps = { analysisFps = it },
+            onAnalysisFps = { analysisFps = it.toInt().coerceIn(5, 30) },
             maxObjects = maxObjects,
-            onMaxObjects = { maxObjects = it },
-            saveIntervalMs = saveIntervalMs,
-            onSaveInterval = { saveIntervalMs = it },
-            controlsVisible = controlsVisible,
-            onControlsVisible = { controlsVisible = it },
-            savedCount = savedCount,
-            onClearData = { DetectionStore.clear(context); savedCount = 0 },
-            currentVersion = currentVersion(context),
-            updateInfo = updateInfo,
-            checkingUpdate = checkingUpdate,
-            onCheckUpdate = {
-                checkingUpdate = true
-                Thread {
-                    val result = checkForUpdate(context)
-                    Handler(context.mainLooper).post { updateInfo = result; checkingUpdate = false }
-                }.start()
-            },
-            onOpenUpdate = { url -> context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) },
-            close = { settings = false },
-            bluetooth = { context.startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)) }
+            onMaxObjects = { maxObjects = it.toInt().coerceIn(1, 50) },
+            boxScale = boxScale,
+            onBoxScale = { boxScale = it },
+            onClose = { settingsOpen = false },
+            modelStatus = modelText
         )
     }
 }
 
 @Composable
-private fun AnalyticsPanel(
-    totalObjects: Int,
-    avgConfidence: Float,
-    stats: List<DetectionStat>,
-    graphHistory: List<Int>
-) {
+private fun AnalyticsPanel(total: Int, avg: Float, stats: List<DetectionStat>, graph: List<Int>) {
     Card(
-        modifier = Modifier.widthIn(min = 240.dp, max = 300.dp),
+        modifier = Modifier.widthIn(min = 245.dp, max = 305.dp),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = .70f)),
-        border = CardDefaults.outlinedCardBorder().copy(alpha = .45f)
+        colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = .72f))
     ) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Analytics, null, tint = Color.Cyan, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(7.dp))
-                Text("AI DETECTION", color = Color.White, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("AI DETECTION", color = Color.White, fontWeight = FontWeight.Bold)
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(9.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MetricChip("TOTAL", totalObjects.toString())
-                MetricChip("CONF", "${(avgConfidence * 100).toInt()}%")
+                StatChip("TOTAL", total.toString())
+                StatChip("CONF", "${(avg * 100).toInt()}%")
             }
             Spacer(Modifier.height(10.dp))
-            Text("REALTIME GRAPH", color = Color.White.copy(.62f), style = MaterialTheme.typography.labelSmall)
+            Text("LIVE OBJECT GRAPH", color = Color.White.copy(.56f), style = MaterialTheme.typography.labelSmall)
             Spacer(Modifier.height(4.dp))
-            DetectionGraph(values = graphHistory, modifier = Modifier.fillMaxWidth().height(64.dp))
+            Sparkline(graph, Modifier.fillMaxWidth().height(64.dp))
             Spacer(Modifier.height(9.dp))
-            Text("OBJECTS", color = Color.White.copy(.62f), style = MaterialTheme.typography.labelSmall)
-            Spacer(Modifier.height(4.dp))
+            Text("DETECTED OBJECTS", color = Color.White.copy(.56f), style = MaterialTheme.typography.labelSmall)
+            Spacer(Modifier.height(5.dp))
             if (stats.isEmpty()) {
-                Text("No object detected", color = Color.White.copy(.55f), style = MaterialTheme.typography.bodySmall)
+                Text("No object detected", color = Color.White.copy(.48f), style = MaterialTheme.typography.bodySmall)
             } else {
-                LazyColumn(modifier = Modifier.heightIn(max = 150.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(stats.take(8), key = { it.label }) { stat ->
-                        ObjectStatRow(stat)
-                    }
+                LazyColumn(modifier = Modifier.heightIn(max = 155.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(stats.take(8), key = { it.label }) { ObjectRow(it) }
                 }
             }
         }
@@ -392,45 +264,40 @@ private fun AnalyticsPanel(
 }
 
 @Composable
-private fun MetricChip(title: String, value: String) {
-    Surface(color = Color.White.copy(alpha = .08f), shape = RoundedCornerShape(12.dp)) {
-        Row(Modifier.padding(horizontal = 9.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(title, color = Color.White.copy(.55f), style = MaterialTheme.typography.labelSmall)
+private fun StatChip(title: String, value: String) {
+    Surface(color = Color.White.copy(.07f), shape = RoundedCornerShape(12.dp)) {
+        Row(Modifier.padding(horizontal = 9.dp, vertical = 7.dp)) {
+            Text(title, color = Color.White.copy(.48f), style = MaterialTheme.typography.labelSmall)
             Spacer(Modifier.width(5.dp))
-            Text(value, color = Color.Cyan, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            Text(value, color = Color.Cyan, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
 
 @Composable
-private fun ObjectStatRow(stat: DetectionStat) {
+private fun ObjectRow(stat: DetectionStat) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Surface(color = Color.Cyan.copy(alpha = .12f), shape = RoundedCornerShape(9.dp)) {
-            Text(stat.label, color = Color.White, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp))
+        Surface(color = Color.Cyan.copy(.10f), shape = RoundedCornerShape(9.dp)) {
+            Text(stat.label, color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp))
         }
         Spacer(Modifier.width(6.dp))
-        Text("×${stat.count}", color = Color.Cyan, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        Text("×${stat.count}", color = Color.Cyan, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
         Spacer(Modifier.weight(1f))
-        Text("${(stat.confidence * 100).toInt()}%", color = Color.White.copy(.72f), style = MaterialTheme.typography.labelSmall)
+        Text("${(stat.confidence * 100).toInt()}%", color = Color.White.copy(.65f), style = MaterialTheme.typography.labelSmall)
     }
 }
 
 @Composable
-private fun DetectionGraph(values: List<Int>, modifier: Modifier = Modifier) {
-    val maxValue = (values.maxOrNull() ?: 1).coerceAtLeast(1)
+private fun Sparkline(values: List<Int>, modifier: Modifier) {
     Canvas(modifier) {
         if (values.size < 2) return@Canvas
-        val stepX = size.width / (values.size - 1).toFloat()
-        val points = values.mapIndexed { index, value ->
-            Offset(
-                x = index * stepX,
-                y = size.height - (value / maxValue.toFloat()) * size.height
-            )
+        val maxValue = (values.maxOrNull() ?: 1).coerceAtLeast(1)
+        val step = size.width / (values.size - 1).toFloat()
+        for (i in 1 until values.size) {
+            val p1 = Offset((i - 1) * step, size.height - (values[i - 1] / maxValue.toFloat()) * size.height)
+            val p2 = Offset(i * step, size.height - (values[i] / maxValue.toFloat()) * size.height)
+            drawLine(Color.Cyan.copy(.75f), p1, p2, strokeWidth = 3f)
         }
-        for (i in 1 until points.size) {
-            drawLine(Color.Cyan.copy(alpha = .75f), points[i - 1], points[i], strokeWidth = 3f)
-        }
-        points.forEach { p -> drawCircle(Color.Cyan, radius = 3.2f, center = p) }
     }
 }
 
@@ -440,13 +307,13 @@ private fun CameraPreview(
     confidence: Float,
     analysisFps: Int,
     maxObjects: Int,
-    modelGeneration: Int,
-    onBoxes: (List<BoxData>, Boolean) -> Unit
+    onStatus: (Boolean) -> Unit,
+    onBoxes: (List<BoxData>) -> Unit
 ) {
     val context = LocalContext.current
     val executor = remember { Executors.newSingleThreadExecutor() }
-    val yolo = remember(modelGeneration) { YoloPoseDetector.load(context) }
-    val detector = remember {
+    val yolo = remember { YoloPoseDetector.load(context) }
+    val mlKit = remember {
         ObjectDetection.getClient(
             ObjectDetectorOptions.Builder()
                 .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
@@ -455,116 +322,112 @@ private fun CameraPreview(
                 .build()
         )
     }
-    DisposableEffect(yolo) { onDispose { yolo?.close(); detector.close(); executor.shutdown() } }
-    AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx ->
-        val view = PreviewView(ctx).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
-        val future = ProcessCameraProvider.getInstance(ctx)
-        future.addListener({
-            val provider = future.get()
-            val preview = Preview.Builder().build().also { it.surfaceProvider = view.surfaceProvider }
-            val size = when (profile) {
-                DeviceTier.FLAGSHIP -> android.util.Size(1280, 720)
-                DeviceTier.MID -> android.util.Size(960, 540)
-                DeviceTier.LOW -> android.util.Size(640, 360)
-            }
-            val analysis = ImageAnalysis.Builder()
-                .setTargetResolution(size)
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-            val lastAnalysisAt = AtomicLong(0L)
-            analysis.setAnalyzer(executor) { proxy ->
-                val now = System.currentTimeMillis()
-                val previous = lastAnalysisAt.get()
-                val minInterval = (1000L / analysisFps.coerceIn(5, 30)).coerceAtLeast(33L)
-                if (now - previous < minInterval || !lastAnalysisAt.compareAndSet(previous, now)) {
-                    proxy.close()
-                    return@setAnalyzer
+    LaunchedEffect(Unit) { onStatus(yolo != null) }
+    DisposableEffect(Unit) {
+        onDispose {
+            yolo?.close()
+            mlKit.close()
+            executor.shutdown()
+        }
+    }
+
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { ctx ->
+            val previewView = PreviewView(ctx).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
+            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+            cameraProviderFuture.addListener({
+                val provider = cameraProviderFuture.get()
+                val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
+                val target = when (profile) {
+                    DeviceTier.FLAGSHIP -> android.util.Size(1280, 720)
+                    DeviceTier.MID -> android.util.Size(960, 540)
+                    DeviceTier.LOW -> android.util.Size(640, 360)
                 }
-                if (yolo != null) {
-                    try {
-                        val poses = yolo.detect(proxy, confidence)
-                        val sourceW = if (proxy.imageInfo.rotationDegrees % 180 == 0) proxy.width else proxy.height
-                        val sourceH = if (proxy.imageInfo.rotationDegrees % 180 == 0) proxy.height else proxy.width
-                        val detected = poses.take(maxObjects.coerceIn(1, 20)).map { pose ->
-                            BoxData(
-                                RectF(
-                                    pose.rect.left * sourceW,
-                                    pose.rect.top * sourceH,
-                                    pose.rect.right * sourceW,
-                                    pose.rect.bottom * sourceH
-                                ),
-                                sourceW,
-                                sourceH,
-                                0,
-                                "PERSON",
-                                pose.confidence
-                            )
-                        }
-                        onBoxes(detected, true)
-                    } catch (_: Throwable) {
-                        onBoxes(emptyList(), true)
-                    } finally {
+                val analysis = ImageAnalysis.Builder()
+                    .setTargetResolution(target)
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                val lastAt = AtomicLong(0L)
+                analysis.setAnalyzer(executor) { proxy ->
+                    val now = System.currentTimeMillis()
+                    val previous = lastAt.get()
+                    val minInterval = (1000L / analysisFps.coerceIn(5, 30)).coerceAtLeast(33L)
+                    if (now - previous < minInterval || !lastAt.compareAndSet(previous, now)) {
                         proxy.close()
+                        return@setAnalyzer
                     }
-                    return@setAnalyzer
+
+                    if (yolo != null) {
+                        try {
+                            val poses = yolo.detect(proxy, confidence)
+                            val sourceW = if (proxy.imageInfo.rotationDegrees % 180 == 0) proxy.width else proxy.height
+                            val sourceH = if (proxy.imageInfo.rotationDegrees % 180 == 0) proxy.height else proxy.width
+                            onBoxes(poses.take(maxObjects).map { pose ->
+                                BoxData(
+                                    RectF(pose.rect.left * sourceW, pose.rect.top * sourceH, pose.rect.right * sourceW, pose.rect.bottom * sourceH),
+                                    sourceW, sourceH, 0, "PERSON", pose.confidence
+                                )
+                            })
+                        } catch (_: Throwable) {
+                            onBoxes(emptyList())
+                        } finally {
+                            proxy.close()
+                        }
+                        return@setAnalyzer
+                    }
+
+                    val image = proxy.image ?: run { proxy.close(); return@setAnalyzer }
+                    val rotation = proxy.imageInfo.rotationDegrees
+                    mlKit.process(InputImage.fromMediaImage(image, rotation))
+                        .addOnSuccessListener { results ->
+                            val detected = results.mapNotNull { item ->
+                                val best = item.labels.maxByOrNull { it.confidence }
+                                val score = best?.confidence ?: 0f
+                                if (score < confidence) null else BoxData(RectF(item.boundingBox), image.width, image.height, rotation, best?.text ?: "OBJECT", score)
+                            }.sortedByDescending { it.confidence }.take(maxObjects)
+                            onBoxes(detected)
+                        }
+                        .addOnCompleteListener { proxy.close() }
                 }
-                val image = proxy.image ?: run { proxy.close(); return@setAnalyzer }
-                val rotation = proxy.imageInfo.rotationDegrees
-                detector.process(InputImage.fromMediaImage(image, rotation)).addOnSuccessListener { result ->
-                    val detected = result.mapNotNull { objectResult ->
-                        val best = objectResult.labels.maxByOrNull { it.confidence }
-                        val score = best?.confidence ?: 0f
-                        if (score < confidence) null
-                        else BoxData(RectF(objectResult.boundingBox), image.width, image.height, rotation, best?.text ?: "OBJECT", score)
-                    }.sortedByDescending { it.confidence }.take(maxObjects.coerceIn(1, 50))
-                    onBoxes(detected, false)
-                }.addOnCompleteListener { proxy.close() }
-            }
-            try {
-                provider.unbindAll()
-                provider.bindToLifecycle(context as ComponentActivity, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
-            } catch (_: Exception) { }
-        }, ContextCompat.getMainExecutor(ctx))
-        view
-    })
+                try {
+                    provider.unbindAll()
+                    provider.bindToLifecycle(context as ComponentActivity, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                } catch (_: Exception) { }
+            }, ContextCompat.getMainExecutor(ctx))
+            previewView
+        }
+    )
 }
 
 @Composable
-private fun BoxOverlay(boxes: List<BoxData>, modifier: Modifier, uiScale: Float) {
+private fun BoxOverlay(boxes: List<BoxData>, modifier: Modifier, scale: Float) {
+    val animatedScale by animateFloatAsState(
+        targetValue = scale.coerceIn(.30f, 1.2f),
+        animationSpec = spring(dampingRatio = .86f, stiffness = 520f),
+        label = "overlay-scale"
+    )
     Canvas(modifier) {
         boxes.forEach { box ->
             val sourceW = if (box.rotationDegrees % 180 == 0) box.sourceWidth else box.sourceHeight
             val sourceH = if (box.rotationDegrees % 180 == 0) box.sourceHeight else box.sourceWidth
-            val scale = max(size.width / sourceW.toFloat(), size.height / sourceH.toFloat())
-            val cropX = (sourceW * scale - size.width) / 2f
-            val cropY = (sourceH * scale - size.height) / 2f
-            val r = box.rect
-            val centerX = r.centerX() * scale - cropX
-            val centerY = r.centerY() * scale - cropY
-            val targetScale by animateFloatAsState(
-                targetValue = uiScale.coerceIn(.30f, 1.2f),
-                animationSpec = spring(dampingRatio = .82f, stiffness = 420f),
-                label = "box-scale"
-            )
-            val width = (r.width() * scale * targetScale).coerceAtLeast(2f)
-            val height = (r.height() * scale * targetScale).coerceAtLeast(2f)
-            val stroke = (1.5.dp.toPx() * targetScale.coerceIn(.35f, 1.2f)).coerceAtLeast(1f)
-            drawRect(
-                Color.Cyan.copy(alpha = .92f),
-                Offset(centerX - width / 2f, centerY - height / 2f),
-                androidx.compose.ui.geometry.Size(width, height),
-                style = Stroke(stroke)
-            )
-            val labelText = "${box.label.uppercase()} ${(box.confidence * 100).toInt()}%"
+            val previewScale = max(size.width / sourceW.toFloat(), size.height / sourceH.toFloat())
+            val cropX = (sourceW * previewScale - size.width) / 2f
+            val cropY = (sourceH * previewScale - size.height) / 2f
+            val rect = box.rect
+            val cx = rect.centerX() * previewScale - cropX
+            val cy = rect.centerY() * previewScale - cropY
+            val width = (rect.width() * previewScale * animatedScale).coerceAtLeast(2f)
+            val height = (rect.height() * previewScale * animatedScale).coerceAtLeast(2f)
+            drawRect(Color.Cyan.copy(.92f), Offset(cx - width / 2f, cy - height / 2f), androidx.compose.ui.geometry.Size(width, height), style = Stroke(2.dp.toPx()))
             val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 color = android.graphics.Color.WHITE
-                textSize = (12.dp.toPx() * targetScale.coerceIn(.45f, 1.0f)).coerceAtLeast(7.dp.toPx())
+                textSize = 12.dp.toPx()
                 typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
             }
-            val fm = paint.fontMetrics
-            val textX = (centerX - width / 2f).coerceAtLeast(4f)
-            val textY = (centerY - height / 2f - 4.dp.toPx()).coerceAtLeast(-fm.top + 2f)
-            drawIntoCanvas { canvas -> canvas.nativeCanvas.drawText(labelText, textX, textY, paint) }
+            drawIntoCanvas { canvas ->
+                canvas.nativeCanvas.drawText("${box.label.uppercase()} ${(box.confidence * 100).toInt()}%", max(4f, cx - width / 2f), max(18f, cy - height / 2f - 4f), paint)
+            }
         }
     }
 }
@@ -574,85 +437,51 @@ private fun BoxOverlay(boxes: List<BoxData>, modifier: Modifier, uiScale: Float)
 private fun SettingsSheet(
     confidence: Float,
     onConfidence: (Float) -> Unit,
-    targetUiScale: Float,
-    onTargetUiScale: (Float) -> Unit,
     analysisFps: Int,
-    onAnalysisFps: (Int) -> Unit,
+    onAnalysisFps: (Float) -> Unit,
     maxObjects: Int,
-    onMaxObjects: (Int) -> Unit,
-    saveIntervalMs: Long,
-    onSaveInterval: (Long) -> Unit,
-    controlsVisible: Boolean,
-    onControlsVisible: (Boolean) -> Unit,
-    savedCount: Int,
-    onClearData: () -> Unit,
-    currentVersion: String,
-    updateInfo: UpdateInfo?,
-    checkingUpdate: Boolean,
-    onCheckUpdate: () -> Unit,
-    onOpenUpdate: (String) -> Unit,
-    close: () -> Unit,
-    bluetooth: () -> Unit
+    onMaxObjects: (Float) -> Unit,
+    boxScale: Float,
+    onBoxScale: (Float) -> Unit,
+    onClose: () -> Unit,
+    modelStatus: String
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     ModalBottomSheet(
-        onDismissRequest = close,
+        onDismissRequest = onClose,
         sheetState = sheetState,
-        containerColor = Color(0xFF0B0F16),
-        dragHandle = { BottomSheetDefaults.DragHandle(color = Color.Cyan.copy(alpha = .75f)) }
+        containerColor = Color(0xFF0B1018),
+        dragHandle = { BottomSheetDefaults.DragHandle(color = Color.Cyan.copy(.75f)) }
     ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).navigationBarsPadding()) {
+        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Settings, null, tint = Color.Cyan)
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text("AI CONTROL CENTER", color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("Swipe up/down • changes apply instantly", color = Color.White.copy(.58f), style = MaterialTheme.typography.bodySmall)
+                    Text("Swipe panel • sliders apply instantly", color = Color.White.copy(.52f), style = MaterialTheme.typography.bodySmall)
                 }
-                IconButton(onClick = close) { Icon(Icons.Default.Close, "Close settings", tint = Color.White) }
+                IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
             }
             Spacer(Modifier.height(8.dp))
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 22.dp)) {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
                 item {
-                    SettingSection("AI DETECTION") {
-                        SmoothSlider("Confidence", confidence, .35f..0.9f, "${(confidence * 100).toInt()}%") { onConfidence(it) }
-                        SmoothSlider("Analysis FPS", analysisFps.toFloat(), 5f..30f, "$analysisFps fps") { onAnalysisFps(it.toInt().coerceIn(5, 30)) }
-                        SmoothSlider("Max objects", maxObjects.toFloat(), 1f..50f, "$maxObjects") { onMaxObjects(it.toInt().coerceIn(1, 50)) }
+                    SettingsCard("AI DETECTION") {
+                        SmoothSlider("Confidence", confidence, .35f..0.90f, "${(confidence * 100).toInt()}%", onConfidence)
+                        SmoothSlider("Analysis FPS", analysisFps.toFloat(), 5f..30f, "$analysisFps fps", onAnalysisFps)
+                        SmoothSlider("Max objects", maxObjects.toFloat(), 1f..50f, "$maxObjects", onMaxObjects)
                     }
                 }
                 item {
-                    SettingSection("HUD & GRAPHICS") {
-                        SmoothSlider("Object UI scale", targetUiScale, .30f..1.2f, "${(targetUiScale * 100).toInt()}%") { onTargetUiScale(it) }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Bottom controls", color = Color.White, modifier = Modifier.weight(1f))
-                            Switch(checked = controlsVisible, onCheckedChange = onControlsVisible)
-                        }
+                    SettingsCard("HUD") {
+                        SmoothSlider("Object box scale", boxScale, .30f..1.20f, "${(boxScale * 100).toInt()}%", onBoxScale)
                     }
                 }
                 item {
-                    SettingSection("STORAGE") {
-                        SmoothSlider("Save interval", saveIntervalMs.toFloat(), 250f..5000f, "${saveIntervalMs} ms") { onSaveInterval(it.toLong().coerceIn(250L, 5000L)) }
-                        Text("Saved detection records: $savedCount", color = Color.White.copy(.70f), style = MaterialTheme.typography.bodySmall)
-                        OutlinedButton(onClick = onClearData, enabled = savedCount > 0, modifier = Modifier.fillMaxWidth()) { Text("Clear detection history") }
-                    }
-                }
-                item {
-                    SettingSection("SYSTEM") {
-                        Text("Version $currentVersion", color = Color.White.copy(.70f))
+                    SettingsCard("MODEL") {
+                        Text(modelStatus, color = Color.White.copy(.72f), style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(6.dp))
-                        Button(onClick = onCheckUpdate, enabled = !checkingUpdate, modifier = Modifier.fillMaxWidth()) {
-                            Text(if (checkingUpdate) "Checking update..." else "Check for update")
-                        }
-                        updateInfo?.let { info ->
-                            Spacer(Modifier.height(5.dp))
-                            Text(if (info.available) "Update available: v${info.version}" else (info.error ?: "You are up to date"), color = Color.White.copy(.72f), style = MaterialTheme.typography.bodySmall)
-                            if (info.available && info.releaseUrl != null) {
-                                OutlinedButton(onClick = { onOpenUpdate(info.releaseUrl) }, modifier = Modifier.fillMaxWidth()) { Text("Open release") }
-                            }
-                        }
-                        OutlinedButton(onClick = bluetooth, modifier = Modifier.fillMaxWidth()) { Text("Bluetooth settings") }
-                        Spacer(Modifier.height(5.dp))
-                        Text("Camera, network and model runtime stay independent of these UI controls.", color = Color.White.copy(.50f), style = MaterialTheme.typography.bodySmall)
+                        Text("YOLO11x-Pose uses the imported .tflite model when available; otherwise ML Kit remains active.", color = Color.White.copy(.48f), style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -661,37 +490,29 @@ private fun SettingsSheet(
 }
 
 @Composable
-private fun SettingSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = .045f)),
-        border = CardDefaults.outlinedCardBorder().copy(alpha = .20f)
+        colors = CardDefaults.cardColors(containerColor = Color.White.copy(.045f))
     ) {
-        Column(Modifier.padding(14.dp), content = {
-            Text(title, color = Color.Cyan.copy(.85f), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        Column(Modifier.padding(14.dp)) {
+            Text(title, color = Color.Cyan.copy(.85f), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
             Spacer(Modifier.height(8.dp))
             content()
-        })
+        }
     }
 }
 
 @Composable
-private fun SmoothSlider(title: String, value: Float, range: ClosedFloatingPointRange<Float>, valueText: String, onValueChange: (Float) -> Unit) {
+private fun SmoothSlider(title: String, value: Float, range: ClosedFloatingPointRange<Float>, display: String, onChange: (Float) -> Unit) {
     val animatedValue by animateFloatAsState(
-        targetValue = value,
-        animationSpec = spring(dampingRatio = .9f, stiffness = 650f),
+        targetValue = value.coerceIn(range.start, range.endInclusive),
+        animationSpec = spring(dampingRatio = .90f, stiffness = 650f),
         label = title
     )
-    Column {
-        Row {
-            Text(title, color = Color.White, modifier = Modifier.weight(1f))
-            Text(valueText, color = Color.Cyan, fontWeight = FontWeight.Bold)
-        }
-        Slider(
-            value = animatedValue,
-            onValueChange = onValueChange,
-            valueRange = range,
-            modifier = Modifier.fillMaxWidth()
-        )
+    Row {
+        Text(title, color = Color.White, modifier = Modifier.weight(1f))
+        Text(display, color = Color.Cyan, fontWeight = FontWeight.Bold)
     }
+    Slider(value = animatedValue, onValueChange = onChange, valueRange = range, modifier = Modifier.fillMaxWidth())
 }
